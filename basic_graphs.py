@@ -3,12 +3,18 @@ from r2r import R2RClient
 client = R2RClient("http://localhost:7272")
 
 def extract_graph(client):
-    document_id = client.documents.list()["results"][0]["id"]
+    document_id = client.documents.list()["results"][1]["id"]
     extract_response = client.documents.extract(document_id)
     # View extracted knowledge
     entities = client.documents.list_entities(document_id)
     relationships = client.documents.list_relationships(document_id)
     return document_id
+
+def extract_graphs(client):
+    documents = client.documents.list()["results"]
+    for doc in documents:
+        client.documents.extract(doc["id"])
+        print(doc["id"] + " extracted")
 
 def create_collection(client, document_id):
     # Create collection
@@ -40,12 +46,14 @@ def graph_sync(client, collection_id, document_id):
     return response
 
 if __name__ == "__main__":
-    document_id = extract_graph(client)
-    collection_id, pull_response = create_collection(client, document_id)
-    print(pull_response)
-    entities, relationships = get_graph(client, collection_id)
-    response = graph_sync(client, collection_id, document_id)
+    # document_id = extract_graph(client)
+    # collection_id, pull_response = create_collection(client, document_id)
+    # print(pull_response)
+    # entities, relationships = get_graph(client, collection_id)
+    # response = graph_sync(client, collection_id, document_id)
     # print(relationships["results"][0])
     # print(entities["results"][0])
 
     # print(response)
+    extract_graphs(client)
+
