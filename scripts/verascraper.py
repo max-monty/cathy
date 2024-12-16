@@ -1,121 +1,195 @@
-import requests
-from bs4 import BeautifulSoup
-from urllib.parse import urljoin, urlparse
-import time
 import json
-from r2r import R2RClient
+import time
+from urllib.parse import urljoin, urlparse
 
-class WebScraper:
+from bs4 import BeautifulSoup
+from r2r import R2RClient
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
+
+class InteractiveScraper:
     def __init__(self, root_url):
         self.root_url = root_url
         self.visited_urls = set()
         self.domain = urlparse(root_url).netloc
-        self.pages = {}  # Dictionary to store url:text pairs
-        # Add your cookies here
-        self.headers = {
-            'Cookie': 'last_client_url=/nobles/; _veracross_session=aDg5Q1B2S3g2UnhJem5sTUp4dldKS3ZVc1RyV1NXTXpZYUZGd3M2dWZNSzQ5Yzd0ekxDaS9XaHh6bGg1d3FObkNqcmM5d2pFckRhd3YycENyRyt2U0pEQm5vb1RrbU5YTjJkUjNZZzFKcWs5YUNmVmtzbDZUWEJEYWdrdFgxTjJEL3hmcDVQOHI1TTNxWnJPV040cGhWaUxRQUZwN1lEem8rQ0VveTd5WlhaRVQ4ZEhLTFVjVjhqMjNpZXNLSXBlRnVmakt6RWJvT3FiRjAyb25WS0pqUjhUVlVkNEE5UUVUZ1BsSXV5WUx5TT0tLUpKclhQRndFaWU1MHl4SlFCZGJRWnc9PQ%3D%3D--d33af876fc92fda6298977eab931815c5b43538a; _dd_s=logs=1&id=608a5ea5-9c14-4ece-bfef-91a0aa38df65&created=1734364013633&expire=1734365951399',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
+        # First create a visible browser for login
+        self.driver = self._initialize_driver(headless=False)
+        self._handle_login()
+        # After login, quit the visible browser and create a headless one
+        cookies = self.cookies  # Save cookies before quitting
+        self.driver.quit()
+        self.driver = self._initialize_driver(headless=True)
+        # Add cookies to new driver
+        self.driver.get(self.root_url)  # Need to be on the domain to add cookies
+        for cookie in cookies:
+            self.driver.add_cookie(cookie)
+        # Refresh page to apply cookies
+        self.driver.get(self.root_url)
+
+    def _initialize_driver(self, headless=True):
+        """Initialize and configure Chrome WebDriver"""
+        chrome_options = Options()
+        if headless:
+            chrome_options.add_argument('--headless')
+        chrome_options.add_argument('--no-sandbox')
+        chrome_options.add_argument('--disable-dev-shm-usage')
+        chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36')
+
+        service = Service(ChromeDriverManager().install())
+        return webdriver.Chrome(service=service, options=chrome_options)
+
+    def _handle_login(self):
+        """Handle manual login process"""
+        self.driver.get(self.root_url)
+        print("Please log in to the website in the opened browser window.")
+        print("After you have successfully logged in, press Enter here in the terminal.")
+        input("Press Enter to continue after logging in...")
+        # Get the cookies from the logged-in session
+        self.cookies = self.driver.get_cookies()
 
     def is_valid_url(self, url):
-        """Check if URL belongs to same domain and is not a file/anchor"""
+        """Check if URL should be scraped"""
         parsed = urlparse(url)
-        return (
-            parsed.netloc == self.domain and
-            not any(url.lower().endswith(ext) for ext in ['.pdf', '.jpg', '.png', '.gif']) and
-            not url.startswith('#')
-        )
+        if parsed.netloc != self.domain:
+            return False
+        if any(url.lower().endswith(ext) for ext in ['.pdf', '.jpg', '.png', '.gif']):
+            return False
+        if url.startswith('#'):
+            return False
+        # Exclude class-specific URLs
+        if url.startswith('https://portals.veracross.com/nobles/faculty/class/'):
+            return False
+        return True
 
-    def get_page_text(self, url):
-        """Extract readable text from a webpage"""
+    def scrape_page(self, url):
+        """Scrape content and links from a single page"""
         try:
-            response = requests.get(url, headers=self.headers, timeout=10)
-            response.raise_for_status()
-            soup = BeautifulSoup(response.text, 'html.parser')
+            self.driver.get(url)
+            self._scroll_page()
             
-            # Remove script and style elements
-            for element in soup(['script', 'style']):
-                element.decompose()
-                
-            return ' '.join(soup.stripped_strings)
-            
+            soup = BeautifulSoup(self.driver.page_source, 'html.parser')
+            print(f"Requested: {url}")
+            print(f"Final URL: {self.driver.current_url}")
+
+            self._remove_unwanted_elements(soup)
+            page_text = self._extract_text(soup)
+            links = self._extract_links(soup, url)
+
+            return page_text, links
+
         except Exception as e:
             print(f"Error scraping {url}: {str(e)}")
-            return None
+            return None, set()
 
-    def get_links(self, url):
-        """Get all valid links from a webpage"""
-        try:
-            response = requests.get(url, headers=self.headers, timeout=10)
-            response.raise_for_status()
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            links = set()
-            for a_tag in soup.find_all('a', href=True):
-                link = urljoin(url, a_tag['href'])
-                if self.is_valid_url(link):
-                    links.add(link)
-                    
-            return links
-            
-        except Exception as e:
-            print(f"Error getting links from {url}: {str(e)}")
-            return set()
+    def _scroll_page(self):
+        """Handle page scrolling for lazy loading"""
+        self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        time.sleep(0.5)
+        self.driver.execute_script("window.scrollTo(0, 0);")
+        time.sleep(1)
+
+    def _remove_unwanted_elements(self, soup):
+        """Remove unnecessary HTML elements"""
+        for element in soup(['script', 'style', 'nav', 'footer', 'iframe']):
+            element.decompose()
+
+    def _extract_text(self, soup):
+        """Extract text content from HTML"""
+        content_areas = soup.find_all(['article', 'main', 'div.content', 'div.main-content'])
+        if not content_areas:
+            content_areas = [soup.find('body')]
+
+        texts = []
+        for area in content_areas:
+            if area:
+                for element in area.find_all(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'span', 'div', 'li']):
+                    if element.string:
+                        texts.append(element.string.strip())
+
+        return ' '.join(filter(None, texts))
+
+    def _extract_links(self, soup, url):
+        """Extract valid links from HTML"""
+        links = set()
+        for a_tag in soup.find_all('a', href=True):
+            link = urljoin(url, a_tag['href'])
+            if self.is_valid_url(link):
+                links.add(link)
+        return links
 
     def scrape(self):
-        """Main scraping method limited to max_pages"""
-        queue = [self.root_url]
+        """Main scraping method using breadth-first traversal"""
         pages_dict = {}
-        pages_scraped = 0
-        client = R2RClient("http://localhost:7272")
+        page_count = 0
+        max_pages = 100
         
-        while queue:
-            current_url = queue.pop(0)
-            
-            if current_url in self.visited_urls:
-                continue
-                
-            print(f"Scraping: {current_url}")
-            
-            # Get page text
-            page_text = self.get_page_text(current_url)
-            if page_text:
-                # Extract page name from URL
-                page_name = urlparse(current_url).path.strip('/').replace('/', '_') or 'home'
-                pages_dict[page_name] = page_text
-                
-                # Ingest document immediately after scraping
-                page_string = json.dumps({"name": page_name, "text": page_text})
-                response = client.documents.create(
-                    raw_text=page_string,
-                    ingestion_mode="hi-res",
-                    metadata={
-                        "title": page_name,
-                        "url": current_url,
-                        "source": "veracross"
-                    }
-                )
-                print(f"Ingestion response for {page_name}:", response)
-                
-                pages_scraped += 1
-                
-            # Mark as visited
-            self.visited_urls.add(current_url)
-            
-            # Add new links to queue
-            new_links = self.get_links(current_url)
-            queue.extend(link for link in new_links if link not in self.visited_urls)
-                
-            # Be nice to servers
-            time.sleep(1)
+        # Initialize with root URL at depth 0
+        current_depth_urls = {self.root_url}
+        self.visited_urls = set()
 
+        while current_depth_urls and page_count < max_pages:
+            print(f"\nProcessing depth {len(self.visited_urls)}")
+            next_depth_urls = set()
+
+            # Process all URLs at current depth
+            for current_url in current_depth_urls:
+                if current_url in self.visited_urls or page_count >= max_pages:
+                    continue
+
+                print(f"\nScraping page {page_count + 1}/{max_pages}: {current_url}")
+                page_text, new_links = self.scrape_page(current_url)
+
+                if page_text:
+                    page_name = urlparse(current_url).path.strip('/').replace('/', '_') or 'home'
+                    pages_dict[page_name] = page_text
+                    print(f"Text length for {page_name}: {len(page_text)} characters")
+                    print(f"Text snippet: {page_text[:200]}...")
+                    page_count += 1
+
+                self.visited_urls.add(current_url)
+                
+                # Add new links to next depth
+                next_depth_urls.update(
+                    link for link in new_links 
+                    if link not in self.visited_urls 
+                    and link not in current_depth_urls
+                    and page_count < max_pages
+                )
+                
+                time.sleep(0.5)
+
+            # Move to next depth
+            current_depth_urls = next_depth_urls
+
+        print(f"\nReached limit of {max_pages} pages or finished scraping all available pages.")
         return pages_dict
+
+
+def ingest_pages(pages):
+    """Ingest scraped pages into R2R"""
+    client = R2RClient("http://localhost:7272")
+    for page_name, page_text in pages.items():
+        page_string = json.dumps({"name": page_name, "text": page_text})
+        response = client.documents.create(
+            raw_text=page_string,
+            ingestion_mode="hi-res",
+            metadata={
+                "title": page_name,
+                "source": "veracross"
+            }
+        )
+        print(f"Ingestion response for {page_name}:", response)
+
 
 def main():
     root_url = "https://portals.veracross.com/nobles/faculty"
-    scraper = WebScraper(root_url)
+    scraper = InteractiveScraper(root_url)
     pages = scraper.scrape()
     print(f"\nScraped {len(pages)} pages")
+    ingest_pages(pages)
+
 
 if __name__ == "__main__":
     main()
