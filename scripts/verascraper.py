@@ -2,6 +2,8 @@ import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
 import time
+import json
+from r2r import R2RClient
 
 class WebScraper:
     def __init__(self, root_url):
@@ -61,8 +63,11 @@ class WebScraper:
             return set()
 
     def scrape(self):
-        """Main scraping method using breadth-first traversal"""
+        """Main scraping method limited to max_pages"""
         queue = [self.root_url]
+        pages_dict = {}
+        pages_scraped = 0
+        client = R2RClient("http://localhost:7272")
         
         while queue:
             current_url = queue.pop(0)
@@ -75,7 +80,24 @@ class WebScraper:
             # Get page text
             page_text = self.get_page_text(current_url)
             if page_text:
-                self.pages[current_url] = page_text
+                # Extract page name from URL
+                page_name = urlparse(current_url).path.strip('/').replace('/', '_') or 'home'
+                pages_dict[page_name] = page_text
+                
+                # Ingest document immediately after scraping
+                page_string = json.dumps({"name": page_name, "text": page_text})
+                response = client.documents.create(
+                    raw_text=page_string,
+                    ingestion_mode="hi-res",
+                    metadata={
+                        "title": page_name,
+                        "url": current_url,
+                        "source": "veracross"
+                    }
+                )
+                print(f"Ingestion response for {page_name}:", response)
+                
+                pages_scraped += 1
                 
             # Mark as visited
             self.visited_urls.add(current_url)
@@ -83,21 +105,17 @@ class WebScraper:
             # Add new links to queue
             new_links = self.get_links(current_url)
             queue.extend(link for link in new_links if link not in self.visited_urls)
-            
+                
             # Be nice to servers
             time.sleep(1)
 
-        return self.pages
+        return pages_dict
 
 def main():
-    root_url = "https://portals.veracross.com/nobles/faculty"  # Replace with your target website
+    root_url = "https://portals.veracross.com/nobles/faculty"
     scraper = WebScraper(root_url)
     pages = scraper.scrape()
-    
     print(f"\nScraped {len(pages)} pages")
-    for url, text in pages.items():
-        print(f"\nURL: {url}")
-        print(f"Text length: {len(text)} characters")
 
 if __name__ == "__main__":
     main()
