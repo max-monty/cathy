@@ -10,7 +10,6 @@ def transform_row(row):
     # Convert string representation of list to actual list
     classes = ast.literal_eval(row['Classes'])
     
-    # Define subjects to exclude
     excluded_subjects = {'LUNCH', 'STUDY HALL', 'ADVISORY', 'ASSEMBLY', 'US: COLLEGE COUNSELING'}
     
     # Transform classes and filter out excluded subjects
