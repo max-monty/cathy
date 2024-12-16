@@ -3,7 +3,7 @@ from r2r import R2RClient
 def main():
     client = R2RClient("http://localhost:7272")
     
-    print("RAG Query System (type 'quit' or 'exit' to end)")
+    print("Ask Cathy! (type 'quit' or 'exit' to end)")
     print("-" * 50)
     
     while True:
